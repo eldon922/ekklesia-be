@@ -51,11 +51,11 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
-app.use('/api/events', eventsRouter);
-app.use('/api/events/:eventId/attendees', attendeesRouter);
+app.use('/ekklesia-api/events', eventsRouter);
+app.use('/ekklesia-api/events/:eventId/attendees', attendeesRouter);
 
 // Health check
-app.get('/api/health', (req, res) => {
+app.get('/ekklesia-api/health', (req, res) => {
   const connectedClients = io.engine.clientsCount;
   res.json({
     success: true,

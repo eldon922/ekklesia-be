@@ -72,7 +72,7 @@ Indexes: `event_id`, `LOWER(name)`, `phone_number`.
 
 ## API Reference
 
-Base path: `/api`
+Base path: `/ekklesia-api`
 
 ### Events
 
@@ -165,7 +165,7 @@ Create a `.env` file in the `backend/` directory:
 PORT=4000
 DB_HOST=localhost
 DB_PORT=5432
-DB_NAME=event_management
+DB_NAME=ekklesia
 DB_USER=postgres
 DB_PASSWORD=your_password
 FRONTEND_URL=http://localhost:3000
@@ -176,7 +176,7 @@ FRONTEND_URL=http://localhost:3000
 | `PORT` | `4000` | HTTP server port |
 | `DB_HOST` | `localhost` | PostgreSQL host |
 | `DB_PORT` | `5432` | PostgreSQL port |
-| `DB_NAME` | `event_management` | Database name |
+| `DB_NAME` | `ekklesia` | Database name |
 | `DB_USER` | `postgres` | Database user |
 | `DB_PASSWORD` | _(empty)_ | Database password |
 | `FRONTEND_URL` | `http://localhost:3000` | Allowed CORS origin |
@@ -211,7 +211,7 @@ The database tables are created automatically on first start via `migrate.js`. N
 ### Health check
 
 ```
-GET http://localhost:4000/api/health
+GET http://localhost:4000/ekklesia-api/health
 ```
 
 Returns server status and current connected Socket.io client count.
