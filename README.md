@@ -72,7 +72,7 @@ Indexes: `event_id`, `LOWER(name)`, `phone_number`.
 
 ## API Reference
 
-Base path: `/ekklesia-api`
+Base path: `/`
 
 ### Events
 
@@ -211,7 +211,7 @@ The database tables are created automatically on first start via `migrate.js`. N
 ### Health check
 
 ```
-GET http://localhost:4000/ekklesia-api/health
+GET http://localhost:4000/health
 ```
 
 Returns server status and current connected Socket.io client count.
