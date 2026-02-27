@@ -24,6 +24,27 @@ async function getEventStats(eventId) {
   return res.rows[0];
 }
 
+// ─── normalization utilities ───────────────────────────────────────────────
+function normalizePhone(number) {
+  if (!number) return null;
+  // strip everything except digits
+  let digits = number.toString().replace(/\D/g, '');
+  // simple rule: if number starts with 0 and has more than one digit, you
+  // could convert to international form here (e.g. +62 -> 62) depending on
+  // your user base. for now we just keep the raw digits so different
+  // formatting doesn't prevent a match.
+  return digits;
+}
+
+function normalizeName(name) {
+  if (!name) return '';
+  // lowercase and remove non-alphanumeric so "John Doe" == "john doe" ==
+  // "john.doe" etc. this is still just exact comparison; for fuzzy matching
+  // you'd need a library or additional logic.
+  return name.toString().trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+
 // Helper: emit to all clients watching this event
 function emitToEvent(req, eventId, event, payload) {
   const io = req.app.get("io");
@@ -178,6 +199,7 @@ router.post("/import", upload.single("file"), async (req, res) => {
     const client = await pool.connect();
     let imported = 0;
     let skipped = 0;
+    const duplicates = [];
 
     try {
       await client.query("BEGIN");
@@ -189,6 +211,61 @@ router.post("/import", upload.single("file"), async (req, res) => {
 
         if (!name) {
           skipped++;
+          continue;
+        }
+
+        // Check for duplicates using normalized values to catch common
+        // formatting differences (e.g. +62 vs 0812) and simple typos.
+        let duplicateMatch = null;
+
+        const normPhone = normalizePhone(phone);
+        if (normPhone) {
+          // compare against normalized phone numbers in the database using
+          // regexp_replace to strip non-digits from stored values as well
+          const phoneCheck = await client.query(
+            `SELECT id, name, phone_number FROM attendees
+             WHERE event_id = $1
+               AND regexp_replace(phone_number, '\\D', '', 'g') = $2
+             LIMIT 1`,
+            [eventId, normPhone],
+          );
+          if (phoneCheck.rows.length > 0) {
+            duplicateMatch = {
+              matchedBy: "phone",
+              existingPhone: phoneCheck.rows[0].phone_number,
+              existingName: phoneCheck.rows[0].name,
+            };
+          }
+        }
+
+        if (!duplicateMatch) {
+          const normName = normalizeName(name);
+          const nameCheck = await client.query(
+            `SELECT id, name, phone_number FROM attendees
+             WHERE event_id = $1
+               AND regexp_replace(lower(name), '[^a-z0-9]', '', 'g') = $2
+             LIMIT 1`,
+            [eventId, normName],
+          );
+          if (nameCheck.rows.length > 0) {
+            duplicateMatch = {
+              matchedBy: "name",
+              existingName: nameCheck.rows[0].name,
+              existingPhone: nameCheck.rows[0].phone_number,
+            };
+          }
+        }
+
+        if (duplicateMatch) {
+          duplicates.push({
+            name,
+            phone,
+            email,
+            rowIndex: rows.indexOf(row) + 2, // +2 because 1-indexed and header is row 1
+            matchedBy: duplicateMatch.matchedBy,
+            existingName: duplicateMatch.existingName,
+            existingPhone: duplicateMatch.existingPhone,
+          });
           continue;
         }
 
@@ -213,9 +290,10 @@ router.post("/import", upload.single("file"), async (req, res) => {
 
       res.json({
         success: true,
-        message: `Import complete. ${imported} attendees imported, ${skipped} rows skipped.`,
+        message: `Import complete. ${imported} attendees imported, ${skipped} rows skipped${duplicates.length > 0 ? `, ${duplicates.length} duplicates found` : ""}.`,
         imported,
         skipped,
+        duplicates,
       });
     } catch (err) {
       await client.query("ROLLBACK");
@@ -231,6 +309,68 @@ router.post("/import", upload.single("file"), async (req, res) => {
         success: false,
         message: "Error processing file: " + err.message,
       });
+  }
+});
+
+// ─── POST import approved duplicates ──────────────────────────────────────────
+router.post("/import-duplicates", async (req, res) => {
+  const { eventId } = req.params;
+  const { duplicates } = req.body;
+
+  if (!duplicates || !Array.isArray(duplicates)) {
+    return res.status(400).json({
+      success: false,
+      message: "No duplicates provided",
+    });
+  }
+
+  try {
+    const client = await pool.connect();
+    let imported = 0;
+
+    try {
+      await client.query("BEGIN");
+
+      for (const dup of duplicates) {
+        const { name, phone, email } = dup;
+        if (!name) continue;
+
+        await client.query(
+          `INSERT INTO attendees (event_id, name, phone_number, email) VALUES ($1, $2, $3, $4)`,
+          [eventId, name, phone || null, email || null],
+        );
+        imported++;
+      }
+
+      await client.query("COMMIT");
+
+      const stats = await getEventStats(eventId);
+
+      // Broadcast: attendee list changed
+      emitToEvent(req, eventId, "attendees:imported", {
+        eventId: parseInt(eventId),
+        imported,
+        skipped: 0,
+        stats,
+      });
+
+      res.json({
+        success: true,
+        message: `${imported} duplicate attendees imported.`,
+        imported,
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      message: "Error importing duplicates: " + err.message,
+    });
   }
 });
 
