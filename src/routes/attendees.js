@@ -27,23 +27,18 @@ async function getEventStats(eventId) {
 // ─── normalization utilities ───────────────────────────────────────────────
 function normalizePhone(number) {
   if (!number) return null;
-  // strip everything except digits
-  let digits = number.toString().replace(/\D/g, '');
-  // simple rule: if number starts with 0 and has more than one digit, you
-  // could convert to international form here (e.g. +62 -> 62) depending on
-  // your user base. for now we just keep the raw digits so different
-  // formatting doesn't prevent a match.
+  let digits = number.toString().replace(/\D/g, "");
   return digits;
 }
 
 function normalizeName(name) {
-  if (!name) return '';
-  // lowercase and remove non-alphanumeric so "John Doe" == "john doe" ==
-  // "john.doe" etc. this is still just exact comparison; for fuzzy matching
-  // you'd need a library or additional logic.
-  return name.toString().trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!name) return "";
+  return name
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
 }
-
 
 // Helper: emit to all clients watching this event
 function emitToEvent(req, eventId, event, payload) {
@@ -84,6 +79,130 @@ router.get("/", async (req, res) => {
   }
 });
 
+// ─── i18n labels for Excel export ────────────────────────────────────────────
+const EXPORT_LABELS = {
+  id: {
+    col_no: "No",
+    col_name: "Nama",
+    col_phone: "No. Telepon",
+    col_church: "Gereja Asal",
+    col_status: "Status",
+    col_checkin_time: "Waktu Check-in",
+    col_source: "Sumber Data",
+    status_checked: "Sudah Check-in",
+    status_pending: "Belum Check-in",
+    source_import: "Import File",
+    source_manual: "Manual",
+    info_event: "Acara",
+    info_date: "Tanggal Acara",
+    info_location: "Lokasi",
+    info_total: "Total Peserta",
+    info_checked: "Sudah Check-in",
+    info_exported: "Diekspor pada",
+    sheet_attendees: "Peserta",
+    sheet_info: "Info Export",
+  },
+  en: {
+    col_no: "No",
+    col_name: "Name",
+    col_phone: "Phone Number",
+    col_church: "Home Church",
+    col_status: "Status",
+    col_checkin_time: "Check-in Time",
+    col_source: "Source",
+    status_checked: "Checked In",
+    status_pending: "Pending",
+    source_import: "Imported",
+    source_manual: "Manual",
+    info_event: "Event",
+    info_date: "Event Date",
+    info_location: "Location",
+    info_total: "Total Attendees",
+    info_checked: "Checked In",
+    info_exported: "Exported at",
+    sheet_attendees: "Attendees",
+    sheet_info: "Export Info",
+  },
+};
+
+// ─── GET export attendees as Excel ───────────────────────────────────────────
+router.get("/export", async (req, res) => {
+  const { eventId } = req.params;
+  const lang = req.query.lang === "en" ? "en" : "id";
+  const L = EXPORT_LABELS[lang];
+
+  try {
+    const eventRes = await pool.query("SELECT * FROM events WHERE id = $1", [
+      eventId,
+    ]);
+    if (eventRes.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Event not found" });
+    }
+    const event = eventRes.rows[0];
+
+    const attendeesRes = await pool.query(
+      "SELECT * FROM attendees WHERE event_id = $1 ORDER BY id ASC",
+      [eventId],
+    );
+
+    const exportedAt = new Date();
+
+    const rows = attendeesRes.rows.map((a, i) => ({
+      [L.col_no]: i + 1,
+      [L.col_name]: a.name,
+      [L.col_phone]: a.phone_number || "",
+      [L.col_church]: a.email || "",
+      [L.col_status]: a.checked_in ? L.status_checked : L.status_pending,
+      [L.col_checkin_time]: a.checked_in_at
+        ? new Date(a.checked_in_at).toISOString()
+        : "",
+      [L.col_source]: a.source === "import" ? L.source_import : L.source_manual,
+    }));
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(rows);
+
+    ws["!cols"] = [
+      { wch: 5 },
+      { wch: 30 },
+      { wch: 18 },
+      { wch: 30 },
+      { wch: 18 },
+      { wch: 22 },
+      { wch: 14 },
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, L.sheet_attendees);
+
+    const infoData = [
+      [L.info_event, event.name],
+      [L.info_date, event.date || "-"],
+      [L.info_location, event.location || "-"],
+      [L.info_total, attendeesRes.rows.length],
+      [L.info_checked, attendeesRes.rows.filter((a) => a.checked_in).length],
+      [L.info_exported, exportedAt.toISOString()],
+    ];
+    const infoWs = XLSX.utils.aoa_to_sheet(infoData);
+    infoWs["!cols"] = [{ wch: 20 }, { wch: 40 }];
+    XLSX.utils.book_append_sheet(wb, infoWs, L.sheet_info);
+
+    const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.send(buffer);
+  } catch (err) {
+    console.error(err);
+    res
+      .status(500)
+      .json({ success: false, message: "Export failed: " + err.message });
+  }
+});
+
 // ─── POST create single attendee ─────────────────────────────────────────────
 router.post(
   "/",
@@ -98,8 +217,21 @@ router.post(
     const { eventId } = req.params;
     const { name, phone_number, email } = req.body;
     try {
+      // Block if event is finished
+      const eventCheck = await pool.query(
+        "SELECT is_finished FROM events WHERE id = $1",
+        [eventId],
+      );
+      if (eventCheck.rows[0]?.is_finished) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "This event has been finished. Adding attendees is disabled.",
+        });
+      }
+
       const result = await pool.query(
-        `INSERT INTO attendees (event_id, name, phone_number, email) VALUES ($1, $2, $3, $4) RETURNING *`,
+        `INSERT INTO attendees (event_id, name, phone_number, email, source) VALUES ($1, $2, $3, $4, 'manual') RETURNING *`,
         [eventId, name, phone_number || null, email || null],
       );
       const stats = await getEventStats(eventId);
@@ -130,6 +262,19 @@ router.post("/import", upload.single("file"), async (req, res) => {
   }
 
   try {
+    // Block if event is finished
+    const eventCheck = await pool.query(
+      "SELECT is_finished FROM events WHERE id = $1",
+      [eventId],
+    );
+    if (eventCheck.rows[0]?.is_finished) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "This event has been finished. Importing attendees is disabled.",
+      });
+    }
+
     const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
@@ -163,7 +308,18 @@ router.post("/import", upload.single("file"), async (req, res) => {
       "no telepon",
       "handphone",
     ];
-    const emailKeys = ["email", "email address", "emailaddress", "e-mail"];
+    // email column also recognises "Gereja Asal" variants
+    const emailKeys = [
+      "email",
+      "email address",
+      "emailaddress",
+      "e-mail",
+      "gereja asal",
+      "gereja",
+      "asal gereja",
+      "home church",
+      "church",
+    ];
 
     const firstRow = rows[0];
     const firstRowKeys = Object.keys(firstRow).map((k) =>
@@ -191,7 +347,7 @@ router.post("/import", upload.single("file"), async (req, res) => {
       return res.status(400).json({
         success: false,
         message:
-          'Could not find a name column. Please ensure your file has a column named "Name" or "Full Name".',
+          'Could not find a name column. Please ensure your file has a column named "Name" or "Nama".',
         detected_columns: Object.keys(firstRow),
       });
     }
@@ -214,14 +370,11 @@ router.post("/import", upload.single("file"), async (req, res) => {
           continue;
         }
 
-        // Check for duplicates using normalized values to catch common
-        // formatting differences (e.g. +62 vs 0812) and simple typos.
+        // Check for duplicates using normalized values
         let duplicateMatch = null;
 
         const normPhone = normalizePhone(phone);
         if (normPhone) {
-          // compare against normalized phone numbers in the database using
-          // regexp_replace to strip non-digits from stored values as well
           const phoneCheck = await client.query(
             `SELECT id, name, phone_number FROM attendees
              WHERE event_id = $1
@@ -261,7 +414,7 @@ router.post("/import", upload.single("file"), async (req, res) => {
             name,
             phone,
             email,
-            rowIndex: rows.indexOf(row) + 2, // +2 because 1-indexed and header is row 1
+            rowIndex: rows.indexOf(row) + 2,
             matchedBy: duplicateMatch.matchedBy,
             existingName: duplicateMatch.existingName,
             existingPhone: duplicateMatch.existingPhone,
@@ -270,7 +423,7 @@ router.post("/import", upload.single("file"), async (req, res) => {
         }
 
         await client.query(
-          `INSERT INTO attendees (event_id, name, phone_number, email) VALUES ($1, $2, $3, $4)`,
+          `INSERT INTO attendees (event_id, name, phone_number, email, source) VALUES ($1, $2, $3, $4, 'import')`,
           [eventId, name, phone || null, email || null],
         );
         imported++;
@@ -280,7 +433,6 @@ router.post("/import", upload.single("file"), async (req, res) => {
 
       const stats = await getEventStats(eventId);
 
-      // Broadcast: attendee list changed (bulk import)
       emitToEvent(req, eventId, "attendees:imported", {
         eventId: parseInt(eventId),
         imported,
@@ -303,12 +455,10 @@ router.post("/import", upload.single("file"), async (req, res) => {
     }
   } catch (err) {
     console.error(err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Error processing file: " + err.message,
-      });
+    res.status(500).json({
+      success: false,
+      message: "Error processing file: " + err.message,
+    });
   }
 });
 
@@ -325,6 +475,19 @@ router.post("/import-duplicates", async (req, res) => {
   }
 
   try {
+    // Block if event is finished
+    const eventCheck = await pool.query(
+      "SELECT is_finished FROM events WHERE id = $1",
+      [eventId],
+    );
+    if (eventCheck.rows[0]?.is_finished) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "This event has been finished. Importing attendees is disabled.",
+      });
+    }
+
     const client = await pool.connect();
     let imported = 0;
 
@@ -336,7 +499,7 @@ router.post("/import-duplicates", async (req, res) => {
         if (!name) continue;
 
         await client.query(
-          `INSERT INTO attendees (event_id, name, phone_number, email) VALUES ($1, $2, $3, $4)`,
+          `INSERT INTO attendees (event_id, name, phone_number, email, source) VALUES ($1, $2, $3, $4, 'import')`,
           [eventId, name, phone || null, email || null],
         );
         imported++;
@@ -346,7 +509,6 @@ router.post("/import-duplicates", async (req, res) => {
 
       const stats = await getEventStats(eventId);
 
-      // Broadcast: attendee list changed
       emitToEvent(req, eventId, "attendees:imported", {
         eventId: parseInt(eventId),
         imported,
@@ -385,6 +547,24 @@ router.patch(
 
     const { eventId, attendeeId } = req.params;
     try {
+      // Block check-in if event is finished
+      const eventCheck = await pool.query(
+        "SELECT is_finished FROM events WHERE id = $1",
+        [eventId],
+      );
+      if (eventCheck.rows.length === 0) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Event not found" });
+      }
+      if (eventCheck.rows[0].is_finished) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "This event has been finished. Check-in is disabled. Restart the event to allow check-ins again.",
+        });
+      }
+
       const current = await pool.query(
         "SELECT * FROM attendees WHERE id = $1 AND event_id = $2",
         [attendeeId, eventId],
@@ -399,9 +579,10 @@ router.patch(
       const attendee = current.rows[0];
 
       if (attendee.checked_in) {
+        // Return the attendee data so the client can format the time in its own timezone
         return res.status(409).json({
           success: false,
-          message: `${attendee.name} is already checked in at ${new Date(attendee.checked_in_at).toLocaleTimeString()}`,
+          message: `${attendee.name} is already checked in`,
           data: attendee,
         });
       }
@@ -414,7 +595,6 @@ router.patch(
 
       const stats = await getEventStats(eventId);
 
-      // Broadcast: someone checked in
       emitToEvent(req, eventId, "attendee:checked_in", {
         eventId: parseInt(eventId),
         attendee: result.rows[0],
@@ -452,7 +632,6 @@ router.patch(
 
       const stats = await getEventStats(eventId);
 
-      // Broadcast: check-in undone
       emitToEvent(req, eventId, "attendee:unchecked", {
         eventId: parseInt(eventId),
         attendee: result.rows[0],
@@ -475,6 +654,19 @@ router.patch(
 router.delete("/:attendeeId", param("attendeeId").isInt(), async (req, res) => {
   const { eventId, attendeeId } = req.params;
   try {
+    // Block if event is finished
+    const eventCheck = await pool.query(
+      "SELECT is_finished FROM events WHERE id = $1",
+      [eventId],
+    );
+    if (eventCheck.rows[0]?.is_finished) {
+      return res.status(403).json({
+        success: false,
+        message:
+          "This event has been finished. Deleting attendees is disabled.",
+      });
+    }
+
     const result = await pool.query(
       "DELETE FROM attendees WHERE id = $1 AND event_id = $2 RETURNING *",
       [attendeeId, eventId],
