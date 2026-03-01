@@ -1,5 +1,5 @@
 {
-  "name": "event-management-backend",
+  "name": "ekklesia-backend",
   "version": "0.0.1",
   "description": "Event Management System - Express Backend",
   "main": "src/index.js",
