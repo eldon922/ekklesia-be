@@ -360,6 +360,13 @@ router.post("/import", upload.single("file"), async (req, res) => {
     try {
       await client.query("BEGIN");
 
+      // Check if this is a first-time import (no existing attendees)
+      const countRes = await client.query(
+        "SELECT COUNT(id) AS cnt FROM attendees WHERE event_id = $1",
+        [eventId],
+      );
+      const isFirstImport = parseInt(countRes.rows[0].cnt) === 0;
+
       for (const row of rows) {
         const name = row[nameKey]?.toString().trim();
         const phone = phoneKey ? row[phoneKey]?.toString().trim() : null;
@@ -370,56 +377,58 @@ router.post("/import", upload.single("file"), async (req, res) => {
           continue;
         }
 
-        // Check for duplicates using normalized values
-        let duplicateMatch = null;
+        // Only check for duplicates on subsequent imports (not the first one)
+        if (!isFirstImport) {
+          let duplicateMatch = null;
 
-        const normPhone = normalizePhone(phone);
-        if (normPhone) {
-          const phoneCheck = await client.query(
-            `SELECT id, name, phone_number FROM attendees
-             WHERE event_id = $1
-               AND regexp_replace(phone_number, '\\D', '', 'g') = $2
-             LIMIT 1`,
-            [eventId, normPhone],
-          );
-          if (phoneCheck.rows.length > 0) {
-            duplicateMatch = {
-              matchedBy: "phone",
-              existingPhone: phoneCheck.rows[0].phone_number,
-              existingName: phoneCheck.rows[0].name,
-            };
+          const normPhone = normalizePhone(phone);
+          if (normPhone) {
+            const phoneCheck = await client.query(
+              `SELECT id, name, phone_number FROM attendees
+               WHERE event_id = $1
+                 AND regexp_replace(phone_number, '\\D', '', 'g') = $2
+               LIMIT 1`,
+              [eventId, normPhone],
+            );
+            if (phoneCheck.rows.length > 0) {
+              duplicateMatch = {
+                matchedBy: "phone",
+                existingPhone: phoneCheck.rows[0].phone_number,
+                existingName: phoneCheck.rows[0].name,
+              };
+            }
           }
-        }
 
-        if (!duplicateMatch) {
-          const normName = normalizeName(name);
-          const nameCheck = await client.query(
-            `SELECT id, name, phone_number FROM attendees
-             WHERE event_id = $1
-               AND regexp_replace(lower(name), '[^a-z0-9]', '', 'g') = $2
-             LIMIT 1`,
-            [eventId, normName],
-          );
-          if (nameCheck.rows.length > 0) {
-            duplicateMatch = {
-              matchedBy: "name",
-              existingName: nameCheck.rows[0].name,
-              existingPhone: nameCheck.rows[0].phone_number,
-            };
+          if (!duplicateMatch) {
+            const normName = normalizeName(name);
+            const nameCheck = await client.query(
+              `SELECT id, name, phone_number FROM attendees
+               WHERE event_id = $1
+                 AND regexp_replace(lower(name), '[^a-z0-9]', '', 'g') = $2
+               LIMIT 1`,
+              [eventId, normName],
+            );
+            if (nameCheck.rows.length > 0) {
+              duplicateMatch = {
+                matchedBy: "name",
+                existingName: nameCheck.rows[0].name,
+                existingPhone: nameCheck.rows[0].phone_number,
+              };
+            }
           }
-        }
 
-        if (duplicateMatch) {
-          duplicates.push({
-            name,
-            phone,
-            email,
-            rowIndex: rows.indexOf(row) + 2,
-            matchedBy: duplicateMatch.matchedBy,
-            existingName: duplicateMatch.existingName,
-            existingPhone: duplicateMatch.existingPhone,
-          });
-          continue;
+          if (duplicateMatch) {
+            duplicates.push({
+              name,
+              phone,
+              email,
+              rowIndex: rows.indexOf(row) + 2,
+              matchedBy: duplicateMatch.matchedBy,
+              existingName: duplicateMatch.existingName,
+              existingPhone: duplicateMatch.existingPhone,
+            });
+            continue;
+          }
         }
 
         await client.query(
@@ -442,7 +451,7 @@ router.post("/import", upload.single("file"), async (req, res) => {
 
       res.json({
         success: true,
-        message: `Import complete. ${imported} attendees imported, ${skipped} rows skipped${duplicates.length > 0 ? `, ${duplicates.length} duplicates found` : ""}.`,
+        message: `Import complete. ${imported} attendees imported.`,
         imported,
         skipped,
         duplicates,
@@ -535,6 +544,58 @@ router.post("/import-duplicates", async (req, res) => {
     });
   }
 });
+
+// ─── PATCH update attendee ────────────────────────────────────────────────────
+router.patch(
+  "/:attendeeId",
+  param("attendeeId").isInt(),
+  body("name").notEmpty().trim(),
+  body("phone_number").optional({ checkFalsy: true }).trim(),
+  body("email").optional({ checkFalsy: true }).trim(),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty())
+      return res.status(400).json({ success: false, errors: errors.array() });
+
+    const { eventId, attendeeId } = req.params;
+    const { name, phone_number, email } = req.body;
+
+    try {
+      // Block if event is finished
+      const eventCheck = await pool.query(
+        "SELECT is_finished FROM events WHERE id = $1",
+        [eventId],
+      );
+      if (eventCheck.rows[0]?.is_finished) {
+        return res.status(403).json({
+          success: false,
+          message: "This event has been finished. Editing attendees is disabled.",
+        });
+      }
+
+      const result = await pool.query(
+        `UPDATE attendees
+         SET name = $1, phone_number = $2, email = $3, updated_at = NOW()
+         WHERE id = $4 AND event_id = $5
+         RETURNING *`,
+        [name, phone_number || null, email || null, attendeeId, eventId],
+      );
+
+      if (result.rows.length === 0)
+        return res.status(404).json({ success: false, message: "Attendee not found" });
+
+      emitToEvent(req, eventId, "attendee:updated", {
+        eventId: parseInt(eventId),
+        attendee: result.rows[0],
+      });
+
+      res.json({ success: true, data: result.rows[0] });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ success: false, message: "Server error" });
+    }
+  },
+);
 
 // ─── PATCH check-in ───────────────────────────────────────────────────────────
 router.patch(
