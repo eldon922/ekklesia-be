@@ -76,7 +76,7 @@ router.get("/", requireEventAccess, async (req, res) => {
     res.json({ success: true, data: result.rows });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
   }
 });
 
@@ -139,7 +139,7 @@ router.get("/export", requireEventAccess, async (req, res) => {
     if (eventRes.rows.length === 0) {
       return res
         .status(404)
-        .json({ success: false, message: "Event not found" });
+        .json({ success: false, code: "EVENT_NOT_FOUND", message: "Event not found" });
     }
     const event = eventRes.rows[0];
 
@@ -200,7 +200,7 @@ router.get("/export", requireEventAccess, async (req, res) => {
     console.error(err);
     res
       .status(500)
-      .json({ success: false, message: "Export failed: " + err.message });
+      .json({ success: false, code: "EXPORT_FAILED", message: "Export failed: " + err.message });
   }
 });
 
@@ -228,7 +228,7 @@ router.post(
         return res.status(403).json({
           success: false,
           message:
-            "This event has been finished. Adding attendees is disabled.",
+            "This event has been finished. Adding attendees is disabled.", code: "EVENT_FINISHED",
         });
       }
 
@@ -248,7 +248,7 @@ router.post(
       res.status(201).json({ success: true, data: result.rows[0] });
     } catch (err) {
       console.error(err);
-      res.status(500).json({ success: false, message: "Server error" });
+      res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
     }
   },
 );
@@ -260,7 +260,7 @@ router.post("/import", requireEventAccess, upload.single("file"), async (req, re
   if (!req.file) {
     return res
       .status(400)
-      .json({ success: false, message: "No file uploaded" });
+      .json({ success: false, code: "NO_FILE", message: "No file uploaded" });
   }
 
   try {
@@ -273,7 +273,7 @@ router.post("/import", requireEventAccess, upload.single("file"), async (req, re
       return res.status(403).json({
         success: false,
         message:
-          "This event has been finished. Importing attendees is disabled.",
+          "This event has been finished. Importing attendees is disabled.", code: "EVENT_FINISHED",
       });
     }
 
@@ -285,7 +285,7 @@ router.post("/import", requireEventAccess, upload.single("file"), async (req, re
     if (rows.length === 0) {
       return res
         .status(400)
-        .json({ success: false, message: "File is empty or has no data" });
+        .json({ success: false, code: "FILE_EMPTY", message: "File is empty or has no data" });
     }
 
     const nameKeys = [
@@ -348,15 +348,15 @@ router.post("/import", requireEventAccess, upload.single("file"), async (req, re
     if (!nameKey) {
       return res.status(400).json({
         success: false,
-        message:
-          'Could not find a name column. Please ensure your file has a column named "Name" or "Nama".',
+        code: "MISSING_NAME_COLUMN",
+        message: "MISSING_NAME_COLUMN",
         detected_columns: Object.keys(firstRow),
       });
     }
 
     const client = await pool.connect();
     let imported = 0;
-    let skipped = 0;
+    let blankRows = 0;
     const duplicates = [];
 
     try {
@@ -375,7 +375,7 @@ router.post("/import", requireEventAccess, upload.single("file"), async (req, re
         const email = emailKey ? row[emailKey]?.toString().trim() : null;
 
         if (!name) {
-          skipped++;
+          blankRows++;
           continue;
         }
 
@@ -447,15 +447,17 @@ router.post("/import", requireEventAccess, upload.single("file"), async (req, re
       emitToEvent(req, eventId, "attendees:imported", {
         eventId: parseInt(eventId),
         imported,
-        skipped,
+        blankRows,
         stats,
       });
 
       res.json({
         success: true,
-        message: `Import complete. ${imported} attendees imported.`,
+        code: duplicates.length > 0 ? "IMPORT_PARTIAL" : "IMPORT_COMPLETE",
+        message: duplicates.length > 0 ? "IMPORT_PARTIAL" : "IMPORT_COMPLETE",
         imported,
-        skipped,
+        blankRows,
+        duplicateCount: duplicates.length,
         duplicates,
       });
     } catch (err) {
@@ -468,7 +470,7 @@ router.post("/import", requireEventAccess, upload.single("file"), async (req, re
     console.error(err);
     res.status(500).json({
       success: false,
-      message: "Error processing file: " + err.message,
+      code: "IMPORT_FAILED", message: "Error processing file: " + err.message,
     });
   }
 });
@@ -481,7 +483,8 @@ router.post("/import-duplicates", requireEventAccess, async (req, res) => {
   if (!duplicates || !Array.isArray(duplicates)) {
     return res.status(400).json({
       success: false,
-      message: "No duplicates provided",
+      code: "NO_DUPLICATES",
+      message: "NO_DUPLICATES",
     });
   }
 
@@ -495,7 +498,7 @@ router.post("/import-duplicates", requireEventAccess, async (req, res) => {
       return res.status(403).json({
         success: false,
         message:
-          "This event has been finished. Importing attendees is disabled.",
+          "This event has been finished. Importing attendees is disabled.", code: "EVENT_FINISHED",
       });
     }
 
@@ -529,7 +532,7 @@ router.post("/import-duplicates", requireEventAccess, async (req, res) => {
 
       res.json({
         success: true,
-        message: `${imported} duplicate attendees imported.`,
+        code: "IMPORT_DUPLICATES_COMPLETE", message: "IMPORT_DUPLICATES_COMPLETE",
         imported,
       });
     } catch (err) {
@@ -542,7 +545,7 @@ router.post("/import-duplicates", requireEventAccess, async (req, res) => {
     console.error(err);
     res.status(500).json({
       success: false,
-      message: "Error importing duplicates: " + err.message,
+      code: "IMPORT_FAILED", message: "Error importing duplicates: " + err.message,
     });
   }
 });
@@ -572,7 +575,7 @@ router.patch(
       if (eventCheck.rows[0]?.is_finished) {
         return res.status(403).json({
           success: false,
-          message: "This event has been finished. Editing attendees is disabled.",
+          message: "This event has been finished. Editing attendees is disabled.", code: "EVENT_FINISHED",
         });
       }
 
@@ -585,7 +588,7 @@ router.patch(
       );
 
       if (result.rows.length === 0)
-        return res.status(404).json({ success: false, message: "Attendee not found" });
+        return res.status(404).json({ success: false, code: "ATTENDEE_NOT_FOUND", message: "Attendee not found" });
 
       emitToEvent(req, eventId, "attendee:updated", {
         eventId: parseInt(eventId),
@@ -595,7 +598,7 @@ router.patch(
       res.json({ success: true, data: result.rows[0] });
     } catch (err) {
       console.error(err);
-      res.status(500).json({ success: false, message: "Server error" });
+      res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
     }
   },
 );
@@ -620,13 +623,13 @@ router.patch(
       if (eventCheck.rows.length === 0) {
         return res
           .status(404)
-          .json({ success: false, message: "Event not found" });
+          .json({ success: false, code: "EVENT_NOT_FOUND", message: "Event not found" });
       }
       if (eventCheck.rows[0].is_finished) {
         return res.status(403).json({
           success: false,
           message:
-            "This event has been finished. Check-in is disabled. Restart the event to allow check-ins again.",
+            "This event has been finished. Check-in is disabled.", code: "EVENT_FINISHED",
         });
       }
 
@@ -638,7 +641,7 @@ router.patch(
       if (current.rows.length === 0) {
         return res
           .status(404)
-          .json({ success: false, message: "Attendee not found" });
+          .json({ success: false, code: "ATTENDEE_NOT_FOUND", message: "Attendee not found" });
       }
 
       const attendee = current.rows[0];
@@ -647,7 +650,7 @@ router.patch(
         // Return the attendee data so the client can format the time in its own timezone
         return res.status(409).json({
           success: false,
-          message: `${attendee.name} is already checked in`,
+          message: `${attendee.name} is already checked in`, code: "ALREADY_CHECKED_IN",
           data: attendee,
         });
       }
@@ -668,12 +671,12 @@ router.patch(
 
       res.json({
         success: true,
-        message: `${result.rows[0].name} checked in successfully!`,
+        code: "CHECKIN_SUCCESS", attendeeName: result.rows[0].name, message: "CHECKIN_SUCCESS",
         data: result.rows[0],
       });
     } catch (err) {
       console.error(err);
-      res.status(500).json({ success: false, message: "Server error" });
+      res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
     }
   },
 );
@@ -694,7 +697,7 @@ router.patch(
       if (result.rows.length === 0)
         return res
           .status(404)
-          .json({ success: false, message: "Attendee not found" });
+          .json({ success: false, code: "ATTENDEE_NOT_FOUND", message: "Attendee not found" });
 
       const stats = await getEventStats(eventId);
 
@@ -706,12 +709,12 @@ router.patch(
 
       res.json({
         success: true,
-        message: "Check-in undone",
+        code: "UNDO_SUCCESS", message: "Check-in undone",
         data: result.rows[0],
       });
     } catch (err) {
       console.error(err);
-      res.status(500).json({ success: false, message: "Server error" });
+      res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
     }
   },
 );
@@ -729,7 +732,7 @@ router.delete("/:attendeeId", requireEventAccess, param("attendeeId").isInt(), a
       return res.status(403).json({
         success: false,
         message:
-          "This event has been finished. Deleting attendees is disabled.",
+          "This event has been finished. Deleting attendees is disabled.", code: "EVENT_FINISHED",
       });
     }
 
@@ -740,7 +743,7 @@ router.delete("/:attendeeId", requireEventAccess, param("attendeeId").isInt(), a
     if (result.rows.length === 0)
       return res
         .status(404)
-        .json({ success: false, message: "Attendee not found" });
+        .json({ success: false, code: "ATTENDEE_NOT_FOUND", message: "Attendee not found" });
 
     const stats = await getEventStats(eventId);
 
@@ -750,10 +753,10 @@ router.delete("/:attendeeId", requireEventAccess, param("attendeeId").isInt(), a
       stats,
     });
 
-    res.json({ success: true, message: "Attendee deleted" });
+    res.json({ success: true, code: "ATTENDEE_DELETED", message: "Attendee deleted" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
   }
 });
 
@@ -768,10 +771,10 @@ router.delete("/", requireEventAccess, async (req, res) => {
       stats: { total_attendees: 0, checked_in_count: 0 },
     });
 
-    res.json({ success: true, message: "All attendees cleared" });
+    res.json({ success: true, code: "ATTENDEES_CLEARED", message: "All attendees cleared" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
   }
 });
 

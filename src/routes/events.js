@@ -30,7 +30,7 @@ router.get("/", async (req, res) => {
     res.json({ success: true, data: result.rows });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
   }
 });
 
@@ -47,7 +47,7 @@ router.get("/:id", param("id").isInt(), async (req, res) => {
     if (event.rows.length === 0)
       return res
         .status(404)
-        .json({ success: false, message: "Event not found" });
+        .json({ success: false, code: "EVENT_NOT_FOUND", message: "Event not found" });
 
     const stats = await pool.query(
       `
@@ -63,7 +63,7 @@ router.get("/:id", param("id").isInt(), async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
   }
 });
 
@@ -76,17 +76,17 @@ router.post("/:id/verify-password", param("id").isInt(), async (req, res) => {
       [req.params.id],
     );
     if (result.rows.length === 0)
-      return res.status(404).json({ success: false, message: "Event not found" });
+      return res.status(404).json({ success: false, code: "EVENT_NOT_FOUND", message: "Event not found" });
 
     const { password_hash } = result.rows[0];
 
     if (password_hash) {
       if (!password)
-        return res.status(401).json({ success: false, message: "Password required" });
+        return res.status(401).json({ success: false, code: "PASSWORD_REQUIRED", message: "Password required" });
 
       const match = await bcrypt.compare(password, password_hash);
       if (!match)
-        return res.status(401).json({ success: false, message: "Incorrect password" });
+        return res.status(401).json({ success: false, code: "PASSWORD_INCORRECT", message: "Incorrect password" });
     }
 
     const token = jwt.sign(
@@ -94,10 +94,10 @@ router.post("/:id/verify-password", param("id").isInt(), async (req, res) => {
       JWT_SECRET,
       { expiresIn: TOKEN_TTL },
     );
-    res.json({ success: true, message: password_hash ? "Password accepted" : "No password required", token });
+    res.json({ success: true, code: "AUTH_OK", message: "AUTH_OK", token });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
   }
 });
 
@@ -137,7 +137,7 @@ router.post(
       res.status(201).json({ success: true, data: sanitize(result.rows[0]) });
     } catch (err) {
       console.error(err);
-      res.status(500).json({ success: false, message: "Server error" });
+      res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
     }
   },
 );
@@ -174,7 +174,7 @@ router.put(
       if (current.rows.length === 0)
         return res
           .status(404)
-          .json({ success: false, message: "Event not found" });
+          .json({ success: false, code: "EVENT_NOT_FOUND", message: "Event not found" });
 
       let password_hash = current.rows[0].password_hash;
       if (remove_password) {
@@ -199,7 +199,7 @@ router.put(
       res.json({ success: true, data: sanitize(result.rows[0]) });
     } catch (err) {
       console.error(err);
-      res.status(500).json({ success: false, message: "Server error" });
+      res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
     }
   },
 );
@@ -218,7 +218,7 @@ router.patch("/:id/finish", param("id").isInt(), requireEventAccess, async (req,
     if (result.rows.length === 0)
       return res
         .status(404)
-        .json({ success: false, message: "Event not found" });
+        .json({ success: false, code: "EVENT_NOT_FOUND", message: "Event not found" });
 
     const io = req.app.get("io");
     if (io)
@@ -229,7 +229,7 @@ router.patch("/:id/finish", param("id").isInt(), requireEventAccess, async (req,
     res.json({ success: true, data: sanitize(result.rows[0]) });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
   }
 });
 
@@ -247,7 +247,7 @@ router.patch("/:id/restart", param("id").isInt(), requireEventAccess, async (req
     if (result.rows.length === 0)
       return res
         .status(404)
-        .json({ success: false, message: "Event not found" });
+        .json({ success: false, code: "EVENT_NOT_FOUND", message: "Event not found" });
 
     const io = req.app.get("io");
     if (io)
@@ -258,7 +258,7 @@ router.patch("/:id/restart", param("id").isInt(), requireEventAccess, async (req
     res.json({ success: true, data: sanitize(result.rows[0]) });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
   }
 });
 
@@ -276,11 +276,11 @@ router.delete("/:id", param("id").isInt(), requireEventAccess, async (req, res) 
     if (result.rows.length === 0)
       return res
         .status(404)
-        .json({ success: false, message: "Event not found" });
-    res.json({ success: true, message: "Event deleted successfully" });
+        .json({ success: false, code: "EVENT_NOT_FOUND", message: "Event not found" });
+    res.json({ success: true, code: "EVENT_DELETED", message: "EVENT_DELETED" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, code: "SERVER_ERROR", message: "Server error" });
   }
 });
 

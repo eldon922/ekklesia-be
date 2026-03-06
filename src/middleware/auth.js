@@ -2,7 +2,7 @@ const jwt = require("jsonwebtoken");
 const pool = require("../db");
 
 const JWT_SECRET = process.env.JWT_SECRET || "ekklesia-secret-change-in-production";
-const TOKEN_TTL = "24h";
+const TOKEN_TTL = "8h";
 
 /**
  * requireEventAccess
