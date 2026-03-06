@@ -2,7 +2,9 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db");
 const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 const { body, param, validationResult } = require("express-validator");
+const { requireEventAccess, JWT_SECRET, TOKEN_TTL } = require("../middleware/auth");
 
 // Helper: strip password_hash from response
 function sanitize(event) {
@@ -65,7 +67,7 @@ router.get("/:id", param("id").isInt(), async (req, res) => {
   }
 });
 
-// POST verify password for a protected event
+// POST verify password for a protected event — returns a JWT on success
 router.post("/:id/verify-password", param("id").isInt(), async (req, res) => {
   const { password } = req.body;
   try {
@@ -74,25 +76,25 @@ router.post("/:id/verify-password", param("id").isInt(), async (req, res) => {
       [req.params.id],
     );
     if (result.rows.length === 0)
-      return res
-        .status(404)
-        .json({ success: false, message: "Event not found" });
+      return res.status(404).json({ success: false, message: "Event not found" });
 
     const { password_hash } = result.rows[0];
-    if (!password_hash)
-      return res.json({ success: true, message: "No password required" });
-    if (!password)
-      return res
-        .status(401)
-        .json({ success: false, message: "Password required" });
 
-    const match = await bcrypt.compare(password, password_hash);
-    if (!match)
-      return res
-        .status(401)
-        .json({ success: false, message: "Incorrect password" });
+    if (password_hash) {
+      if (!password)
+        return res.status(401).json({ success: false, message: "Password required" });
 
-    res.json({ success: true, message: "Password accepted" });
+      const match = await bcrypt.compare(password, password_hash);
+      if (!match)
+        return res.status(401).json({ success: false, message: "Incorrect password" });
+    }
+
+    const token = jwt.sign(
+      { eventId: parseInt(req.params.id) },
+      JWT_SECRET,
+      { expiresIn: TOKEN_TTL },
+    );
+    res.json({ success: true, message: password_hash ? "Password accepted" : "No password required", token });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Server error" });
@@ -144,6 +146,7 @@ router.post(
 router.put(
   "/:id",
   param("id").isInt(),
+  requireEventAccess,
   body("name").notEmpty().trim().withMessage("Event name is required"),
   body("date").optional({ checkFalsy: true }).isDate(),
   body("password").optional({ checkFalsy: true }),
@@ -202,7 +205,7 @@ router.put(
 );
 
 // PATCH finish event — marks event as finished, blocking further check-ins
-router.patch("/:id/finish", param("id").isInt(), async (req, res) => {
+router.patch("/:id/finish", param("id").isInt(), requireEventAccess, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty())
     return res.status(400).json({ success: false, errors: errors.array() });
@@ -231,7 +234,7 @@ router.patch("/:id/finish", param("id").isInt(), async (req, res) => {
 });
 
 // PATCH restart event — re-opens a finished event for check-in
-router.patch("/:id/restart", param("id").isInt(), async (req, res) => {
+router.patch("/:id/restart", param("id").isInt(), requireEventAccess, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty())
     return res.status(400).json({ success: false, errors: errors.array() });
@@ -260,7 +263,7 @@ router.patch("/:id/restart", param("id").isInt(), async (req, res) => {
 });
 
 // DELETE event
-router.delete("/:id", param("id").isInt(), async (req, res) => {
+router.delete("/:id", param("id").isInt(), requireEventAccess, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty())
     return res.status(400).json({ success: false, errors: errors.array() });

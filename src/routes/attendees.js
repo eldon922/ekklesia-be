@@ -4,6 +4,7 @@ const pool = require("../db");
 const multer = require("multer");
 const XLSX = require("xlsx");
 const { body, param, validationResult } = require("express-validator");
+const { requireEventAccess } = require("../middleware/auth");
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -47,7 +48,7 @@ function emitToEvent(req, eventId, event, payload) {
 }
 
 // ─── GET attendees with optional search/filter ───────────────────────────────
-router.get("/", async (req, res) => {
+router.get("/", requireEventAccess, async (req, res) => {
   const { eventId } = req.params;
   const { search, checked_in } = req.query;
 
@@ -126,7 +127,7 @@ const EXPORT_LABELS = {
 };
 
 // ─── GET export attendees as Excel ───────────────────────────────────────────
-router.get("/export", async (req, res) => {
+router.get("/export", requireEventAccess, async (req, res) => {
   const { eventId } = req.params;
   const lang = req.query.lang === "en" ? "en" : "id";
   const L = EXPORT_LABELS[lang];
@@ -206,6 +207,7 @@ router.get("/export", async (req, res) => {
 // ─── POST create single attendee ─────────────────────────────────────────────
 router.post(
   "/",
+  requireEventAccess,
   body("name").notEmpty().trim(),
   body("phone_number").optional().trim(),
   body("email").optional({ checkFalsy: true }),
@@ -252,7 +254,7 @@ router.post(
 );
 
 // ─── POST import from CSV/Excel ───────────────────────────────────────────────
-router.post("/import", upload.single("file"), async (req, res) => {
+router.post("/import", requireEventAccess, upload.single("file"), async (req, res) => {
   const { eventId } = req.params;
 
   if (!req.file) {
@@ -472,7 +474,7 @@ router.post("/import", upload.single("file"), async (req, res) => {
 });
 
 // ─── POST import approved duplicates ──────────────────────────────────────────
-router.post("/import-duplicates", async (req, res) => {
+router.post("/import-duplicates", requireEventAccess, async (req, res) => {
   const { eventId } = req.params;
   const { duplicates } = req.body;
 
@@ -548,6 +550,7 @@ router.post("/import-duplicates", async (req, res) => {
 // ─── PATCH update attendee ────────────────────────────────────────────────────
 router.patch(
   "/:attendeeId",
+  requireEventAccess,
   param("attendeeId").isInt(),
   body("name").notEmpty().trim(),
   body("phone_number").optional({ checkFalsy: true }).trim(),
@@ -600,6 +603,7 @@ router.patch(
 // ─── PATCH check-in ───────────────────────────────────────────────────────────
 router.patch(
   "/:attendeeId/checkin",
+  requireEventAccess,
   param("attendeeId").isInt(),
   async (req, res) => {
     const errors = validationResult(req);
@@ -677,6 +681,7 @@ router.patch(
 // ─── PATCH undo check-in ──────────────────────────────────────────────────────
 router.patch(
   "/:attendeeId/undo-checkin",
+  requireEventAccess,
   param("attendeeId").isInt(),
   async (req, res) => {
     const { eventId, attendeeId } = req.params;
@@ -712,7 +717,7 @@ router.patch(
 );
 
 // ─── DELETE attendee ──────────────────────────────────────────────────────────
-router.delete("/:attendeeId", param("attendeeId").isInt(), async (req, res) => {
+router.delete("/:attendeeId", requireEventAccess, param("attendeeId").isInt(), async (req, res) => {
   const { eventId, attendeeId } = req.params;
   try {
     // Block if event is finished
@@ -753,7 +758,7 @@ router.delete("/:attendeeId", param("attendeeId").isInt(), async (req, res) => {
 });
 
 // ─── DELETE all attendees ─────────────────────────────────────────────────────
-router.delete("/", async (req, res) => {
+router.delete("/", requireEventAccess, async (req, res) => {
   const { eventId } = req.params;
   try {
     await pool.query("DELETE FROM attendees WHERE event_id = $1", [eventId]);
